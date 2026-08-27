@@ -230,6 +230,12 @@
         return;
       }
 
+      // Si l'utilisateur a explicitement supprimé la cross référence pour cette table via le menu
+      if (tablePrincipale.dataset.crossRefDeleted === "true") {
+        debug.log("⏭️ Cross référence explicitement supprimée par l'utilisateur pour cette table.");
+        return;
+      }
+
       // Vérifier si une cross référence existe déjà dans le DOM
       const existingCrossRef = this.findExistingCrossRef(tablePrincipale);
       if (existingCrossRef) {
@@ -237,19 +243,30 @@
         return;
       }
 
-      // Check if a saved cross-reference exists in localStorage for this table
-      const allData = this.loadAllData();
-      const tableId = tablePrincipale.dataset.tableId || this.generateTableId(tablePrincipale);
-      
-      // Find if there is a saved entry for this table
-      const savedEntry = Object.values(allData).find(entry => entry.forTable === tableId);
-      
-      if (savedEntry) {
-        debug.log("🎯 Restauration d'une cross référence sauvegardée...");
-        this.createCrossRefHorizontale(tablePrincipale, natureDeTest, div);
-        this.restoreAllCrossRefs(); // Restore values from localStorage
-      } else {
-        debug.log("⏭️ Pas de cross référence sauvegardée. Pas de création automatique.");
+      if (this.processedTables.has(tablePrincipale)) {
+        debug.warn("⚠️ Table principale déjà traitée");
+        return;
+      }
+
+      // Création automatique de la cross référence
+      debug.log("🎯 Création automatique de la cross référence...");
+      const crossRefTable = this.createCrossRefHorizontale(tablePrincipale, natureDeTest, div);
+      if (crossRefTable) {
+        this.processedTables.add(tablePrincipale);
+
+        // Check if a saved cross-reference exists in localStorage for this table
+        const allData = this.loadAllData();
+        const tableId = tablePrincipale.dataset.tableId || this.generateTableId(tablePrincipale);
+        const savedEntry = Object.values(allData).find(entry => entry.forTable === tableId);
+        
+        if (savedEntry) {
+          debug.log("🎯 Restauration d'une cross référence sauvegardée...");
+          this.restoreCrossRefValues(crossRefTable, savedEntry);
+        } else {
+          // Sauvegarder les valeurs générées par défaut
+          this.saveCrossRefDataNow(crossRefTable);
+        }
+        debug.log("✅ [FIN] Cross référence créée avec succès!");
       }
     }
 
@@ -257,6 +274,7 @@
      * Créer programmatiquement une cross référence pour une table (depuis le menu contextuel)
      */
     createCrossRefForTable(tablePrincipale, natureDeTest) {
+      delete tablePrincipale.dataset.crossRefDeleted;
       const parentDiv = tablePrincipale.closest('div.prose, div[class*="prose"]');
       if (!parentDiv) {
         debug.error("Parent div not found for table");
@@ -265,6 +283,7 @@
       
       const crossRefTable = this.createCrossRefHorizontale(tablePrincipale, natureDeTest, parentDiv);
       if (crossRefTable) {
+        this.processedTables.add(tablePrincipale);
         this.saveCrossRefDataNow(crossRefTable);
         return crossRefTable;
       }
@@ -276,6 +295,8 @@
      */
     deleteCrossRefForTable(tablePrincipale) {
       const tableId = tablePrincipale.dataset.tableId || this.generateTableId(tablePrincipale);
+      tablePrincipale.dataset.crossRefDeleted = "true";
+      this.processedTables.add(tablePrincipale);
       const existingCrossRef = this.findExistingCrossRef(tablePrincipale);
       
       if (existingCrossRef) {
@@ -906,8 +927,8 @@
         td.style.fontWeight = "500";
         td.style.textAlign = "center";
         setExactWidth(td, columnWidthsPx[emptyColumnsCount + i]);
-        // Remplissage avec des crochets vides selon la demande
-        td.textContent = `[]`;
+        // Format : crochets avec espace de 3 caractères sans lettres ni chiffres pour saisie utilisateur
+        td.textContent = "[   ]";
         td.contentEditable = "true";
         row.appendChild(td);
       }
