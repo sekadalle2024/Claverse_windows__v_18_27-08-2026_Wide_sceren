@@ -36,34 +36,68 @@ Le composant [`ScreenSelector.tsx`](file:///h:/ClaraVerse/src/components/ScreenS
 
 La nouvelle architecture dans [`screenManager.ts`](file:///h:/ClaraVerse/src/utils/screenManager.ts) repose sur la séparation du **calcul de la largeur physique maximale**, la **sécurisation du viewport**, et la **réduction des retraits inutiles**.
 
-### A. Calcul Dynamique et Capping de la Largeur
-Lors de la détection de tables modélisées, le script scanne leur largeur réelle de contenu (`scrollWidth`). Au lieu d'injecter des valeurs brutes qui pourraient dépasser la résolution d'écran de l'utilisateur, la largeur est plafonnée :
-```typescript
-// Calcul de la largeur nécessaire
-const neededWidth = tableScrollWidth + 60; // 60px de marge d'ajustement
-if (neededWidth > sessionMaxTargetWidth) {
-  sessionMaxTargetWidth = neededWidth;
-}
+### A. Mesure Non-Intrusive de la Largeur Réelle (`getTableNaturalWidth`)
+Lors de la détection de tables modélisées, lire simplement `table.scrollWidth` sur une table contrainte par son parent (`width: 100%`) renverrait une largeur tronquée (ex: 896px ou 1200px) et empêcherait la table de s'étendre.
+Pour mesurer la largeur naturelle réelle **sans perturber le DOM live ni causer de sauts de défilement**, une copie clone est temporairement mesurée hors-écran :
 
+```typescript
+function getTableNaturalWidth(table: HTMLTableElement): number {
+  try {
+    const clone = table.cloneNode(true) as HTMLTableElement;
+    clone.style.position = 'fixed';
+    clone.style.visibility = 'hidden';
+    clone.style.pointerEvents = 'none';
+    clone.style.width = 'max-content';
+    clone.style.maxWidth = 'none';
+    clone.style.tableLayout = 'auto';
+    clone.style.top = '-9999px';
+    clone.style.left = '-9999px';
+    clone.style.zIndex = '-1000';
+    document.body.appendChild(clone);
+    const measuredWidth = clone.scrollWidth || clone.offsetWidth || Math.ceil(clone.getBoundingClientRect().width);
+    document.body.removeChild(clone);
+    return Math.max(measuredWidth, 1200);
+  } catch (e) {
+    return table.scrollWidth || 1200;
+  }
+}
+```
+
+La largeur cible est ensuite calculée et plafonnée aux limites physiques de l'écran :
+```typescript
 // Récupération de la largeur réelle du viewport de l'utilisateur
 const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1920;
 
 // Marge d'écran minimale de 12px au total (6px à gauche, 6px à droite)
 const maxSafeViewportWidth = Math.max(800, viewportWidth - 12);
 
+// Base de calcul : largeur naturelle maximale détectée (+ 40px de marge)
+const baseTargetWidth = maxTableNaturalWidth > 0 
+  ? Math.max(maxTableNaturalWidth, 1400)
+  : maxSafeViewportWidth;
+
 // Application du multiplicateur (1.0 pour wide, 0.9 pour middle)
-const rawTargetWidth = Math.round(sessionMaxTargetWidth * widthMultiplier);
+const rawTargetWidth = Math.round(baseTargetWidth * widthMultiplier);
 
 // Capping de la largeur effective
 const effectiveWidth = Math.min(rawTargetWidth, maxSafeViewportWidth);
 ```
 
-### B. Isolation du Défilement et Verrouillage global (CSS Injecté)
-Pour garantir que la Topbar et la structure de l'application restent fixes et centrées, le scroll horizontal au niveau du document est bloqué. Le défilement est restreint uniquement à la bulle de message contenant la table :
+### B. Isolation du Défilement & Prévention du Saut de Scroll (Scroll Anchoring)
+Pour garantir que la Topbar et la structure de l'application restent fixes et centrées, et empêcher que le visuel ne saute vers le haut lors du scroll vers la fin du chat :
+1. `overflow-anchor: none !important;` est appliqué sur le conteneur de défilement et ses descendants pour désactiver l'ancrage automatique du navigateur.
+2. Un **User-Scroll Guard** désactive les recalculs du MutationObserver pendant le défilement manuel utilisateur.
+3. Le défilement horizontal est restreint uniquement à la bulle de message contenant la table :
 ```css
 /* Bloque tout défilement sur la page entière */
 html, body {
   overflow-x: hidden !important;
+}
+
+/* Désactive les sauts d'ancrage de défilement du navigateur */
+body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto,
+body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto * {
+  overflow-anchor: none !important;
 }
 
 /* Scrollboard isolé pour la table si celle-ci excède la largeur maximale de la bulle */
@@ -77,14 +111,15 @@ body[data-clara-screen-mode="wide"] .prose div:has(> table) {
 }
 ```
 
-### C. Réduction des Retraits (Gains d'Espace Bord à Bord)
-Afin de minimiser le retrait à gauche et à droite pour les écrans plus petits tout en conservant la symétrie, les styles injectés en mode `wide`/`middle` surchargent les paddings Tailwind :
-* **Padding du chat réduit** : `.flex-1.overflow-y-auto` passe de `p-6` (24px) à `6px` à gauche et à droite.
-* **Largeur du conteneur** : Passe de `96%` à `calc(100% - 12px)` (laisse exactement 6px de marge extérieure).
-* **Gap d'avatar** : Réduit de `16px` à `8px`.
-* **Padding de bulle** : Réduit de `20px` à `8px`.
-
-*Résultat* : **Plus de 130px de largeur horizontale brute** sont récupérés au profit de l'affichage direct de la table sans avoir besoin de scroller.
+### C. Réduction des Retraits de 60% & Cohérence Visuelle Préservée
+Afin d'étendre la largeur utilisable par les tables tout en conservant une esthétique soignée et équilibrée :
+* **Proportions de l'avatar préservées** : L'icône conserve sa taille standard (32px) et son rendu net.
+* **Retraits réduits de 60%** :
+  * Padding de la zone de chat : 10px (réduit de 60% par rapport aux 24px d'origine).
+  * Padding intérieur de la bulle : 10px (réduit de 50-60% par rapport aux 20px d'origine).
+  * Largeur du conteneur : `width: 98% !important;` (laissant seulement ~1% de marge extérieure).
+  * Marge maximale du viewport : 14px total (7px à gauche, 7px à droite).
+* **Résultat** : La table gagne une amplitude horizontale maximale pour afficher l'ensemble de ses colonnes, avec des espacements symétriques et harmonieux.
 
 ---
 
