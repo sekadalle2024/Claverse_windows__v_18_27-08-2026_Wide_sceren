@@ -83,44 +83,36 @@ function ensureStyleTagInjected(): void {
         overflow-x: hidden !important;
       }
 
-      /* ── FIX SCROLL-JUMP ────────────────────────────────────────────────────
-         The browser's Scroll Anchoring algorithm picks an "anchor element"
-         among the children of the scroll container and adjusts scrollTop to
-         keep that element at the same visual position when the layout changes.
-         In Wide/Middle mode the MutationObserver updates the CSS variable
-         --clara-target-width on <body>, which triggers a layout recalculation;
-         the browser then repositions the scroll container upward to maintain
-         its anchor, causing the visible jump.
-
-         The fix: disable overflow-anchor on the scroll container AND all its
-         descendants so no anchor element is ever chosen.
-      ── ────────────────────────────────────────────────────────────────────── */
-
-      /* Scroll container: disable padding change and anchoring */
-      body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto {
-        padding-left: 6px !important;
-        padding-right: 6px !important;
-        overflow-anchor: none !important;
-      }
-
-      /* All descendants of the scroll container: prevent browser from choosing
-         any of them as anchor elements (cascading override) */
+      /* Disable scroll anchoring jumps in wide mode */
+      body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto,
       body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto * {
         overflow-anchor: none !important;
       }
 
-      /* Widen the main wrappers (chat message area and input zone) with minimal 6px margin.
-         NO transition on max-width: CSS transitions trigger layout which re-activates
-         scroll anchoring in some Chromium versions even when overflow-anchor:none is set. */
+      /* Reduce scroll container outer padding by 60% (10px instead of 24px) */
+      body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+        overflow-anchor: none !important;
+      }
+
+      /* All descendants of the scroll container: prevent browser from choosing
+         any of them as anchor elements */
+      body[data-clara-screen-mode="wide"] .flex-1.overflow-y-auto * {
+        overflow-anchor: none !important;
+      }
+
+      /* Widen the main wrappers with 60% reduced side margins (98% width) */
       body[data-clara-screen-mode="wide"] [data-widescreen-target="container"] {
         max-width: var(--clara-target-width) !important;
-        width: calc(100% - 12px) !important;
+        width: 98% !important;
         margin-left: auto !important;
         margin-right: auto !important;
         box-sizing: border-box !important;
+        transition: max-width 0.25s ease-out;
       }
 
-      /* Message row: compact gap with avatar to maximize table width on the left */
+      /* Message row: clean, harmonious gap with standard avatar */
       body[data-clara-screen-mode="wide"] .flex.gap-4:has([data-widescreen-target="bubble"]) {
         gap: 8px !important;
       }
@@ -133,12 +125,12 @@ function ensureStyleTagInjected(): void {
         box-sizing: border-box !important;
       }
 
-      /* Inner bubble: compact padding (8px) to let the table use all available width */
+      /* Inner bubble: 60% reduced padding (10px instead of 20px) while maintaining aesthetics */
       body[data-clara-screen-mode="wide"] [data-widescreen-target="bubble-inner"] {
         width: 100% !important;
         max-width: 100% !important;
-        padding-left: 8px !important;
-        padding-right: 8px !important;
+        padding-left: 10px !important;
+        padding-right: 10px !important;
         box-sizing: border-box !important;
         overflow-x: auto !important;
       }
@@ -150,13 +142,13 @@ function ensureStyleTagInjected(): void {
         box-sizing: border-box !important;
       }
 
-      /* Wrapper div of each table: horizontal scroll with minimal right buffer */
+      /* Wrapper div of each table: horizontal scroll with clean buffer */
       body[data-clara-screen-mode="wide"] .prose div:has(> table) {
         max-width: 100% !important;
         width: 100% !important;
         overflow-x: auto !important;
         box-sizing: border-box !important;
-        padding-right: 6px !important;
+        padding-right: 8px !important;
         scrollbar-width: thin !important;
       }
 
@@ -178,6 +170,31 @@ function ensureStyleTagInjected(): void {
 }
 
 /**
+ * Accurately measures the unconstrained natural width of a table with all its columns
+ * expanded by cloning it offscreen. This does NOT mutate the live DOM or cause scroll jumps.
+ */
+function getTableNaturalWidth(table: HTMLTableElement): number {
+  try {
+    const clone = table.cloneNode(true) as HTMLTableElement;
+    clone.style.position = 'fixed';
+    clone.style.visibility = 'hidden';
+    clone.style.pointerEvents = 'none';
+    clone.style.width = 'max-content';
+    clone.style.maxWidth = 'none';
+    clone.style.tableLayout = 'auto';
+    clone.style.top = '-9999px';
+    clone.style.left = '-9999px';
+    clone.style.zIndex = '-1000';
+    document.body.appendChild(clone);
+    const measuredWidth = clone.scrollWidth || clone.offsetWidth || Math.ceil(clone.getBoundingClientRect().width);
+    document.body.removeChild(clone);
+    return Math.max(measuredWidth, 1200);
+  } catch (e) {
+    return table.scrollWidth || 1200;
+  }
+}
+
+/**
  * Adjust all modelized tables and their containers to a given screen mode using CSS variable updates.
  * @param widthMultiplier - 1.0 for wide, 0.9 for middle
  */
@@ -185,23 +202,32 @@ function applyScreenMode(widthMultiplier: number): void {
   const tables = Array.from(document.querySelectorAll('table'));
   const modelizedTables = tables.filter(isModelizedTable);
 
-  // 1. Scan width from modelized tables non-intrusively (without mutating inline styles)
+  // 1. Scan true unconstrained natural width from modelized tables via offscreen clone
+  let maxTableNaturalWidth = 0;
   modelizedTables.forEach(table => {
-    const tableScrollWidth = table.scrollWidth || table.offsetWidth;
-    const neededWidth = tableScrollWidth + 60;
-    if (neededWidth > sessionMaxTargetWidth) {
-      sessionMaxTargetWidth = neededWidth;
+    const naturalWidth = getTableNaturalWidth(table);
+    const neededWidth = naturalWidth + 40;
+    if (neededWidth > maxTableNaturalWidth) {
+      maxTableNaturalWidth = neededWidth;
     }
   });
 
-  // Calculate safe viewport width with minimal 12px total margin (6px left + 6px right)
+  // Calculate safe viewport width with 60% reduced margin (7px left + 7px right = 14px total)
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1920;
-  const maxSafeViewportWidth = Math.max(800, viewportWidth - 12);
+  const maxSafeViewportWidth = Math.max(800, viewportWidth - 14);
+
+  // If modelized tables exist, expand to fit their natural width (or max safe viewport width)
+  // If no tables are present yet, default to max safe viewport width so user gets wide space
+  const baseTargetWidth = maxTableNaturalWidth > 0 
+    ? Math.max(maxTableNaturalWidth, 1400)
+    : maxSafeViewportWidth;
 
   // Apply the multiplier: 1.0 for wide, 0.9 for middle
-  const rawTargetWidth = Math.round(sessionMaxTargetWidth * widthMultiplier);
-  // Cap at safe viewport width so the table reaches right up to the edge safely
+  const rawTargetWidth = Math.round(baseTargetWidth * widthMultiplier);
+  // Cap at safe viewport width so the table fits comfortably without touching edges
   const effectiveWidth = Math.min(rawTargetWidth, maxSafeViewportWidth);
+
+
 
   // 2. Ensure the static stylesheet is present
   ensureStyleTagInjected();
@@ -232,6 +258,7 @@ function applyScreenMode(widthMultiplier: number): void {
   // calls and prevents the scroll-anchor algorithm from jumping the viewport.
   attachUserScrollGuard();
 }
+
 
 /**
  * Adjust all modelized tables and their containers to widescreen (100% width)
